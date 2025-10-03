@@ -253,6 +253,7 @@ class TransactionPayload:
     SCRIPT: int = 0
     MODULE_BUNDLE: int = 1
     SCRIPT_FUNCTION: int = 2
+    INNER_PAYLOAD: int = 4 
 
     variant: int
     value: Any
@@ -264,6 +265,8 @@ class TransactionPayload:
             self.variant = TransactionPayload.MODULE_BUNDLE
         elif isinstance(payload, EntryFunction):
             self.variant = TransactionPayload.SCRIPT_FUNCTION
+        elif isinstance(payload, OrderlessPayload):  
+            self.variant = TransactionPayload.INNER_PAYLOAD
         else:
             raise Exception("Invalid type")
         self.value = payload
@@ -294,7 +297,6 @@ class TransactionPayload:
     def serialize(self, serializer: Serializer) -> None:
         serializer.uleb128(self.variant)
         self.value.serialize(serializer)
-
 
 class ModuleBundle:
     def __init__(self):
@@ -477,6 +479,45 @@ class EntryFunction:
         serializer.sequence(self.ty_args, Serializer.struct)
         serializer.sequence(self.args, Serializer.to_bytes)
 
+class OrderlessPayload:
+    """Orderless transaction payload wrapper"""
+    
+    def __init__(self, entry_function: EntryFunction, nonce: int):
+        self.entry_function = entry_function
+        self.nonce = nonce
+    
+    def serialize(self, serializer: Serializer):
+        """Serialize orderless payload WITHOUT the outer variant (TransactionPayload handles that)"""
+        
+        # OrderlessTransactionPayload::V1 variant
+        serializer.uleb128(0)
+        
+        # Executable::EntryFunction variant
+        serializer.uleb128(1)
+        
+        # Serialize the entry function
+        self.entry_function.serialize(serializer)
+        
+        # ExtraConfig::V1 variant
+        serializer.uleb128(0)
+        
+        # Option<MultisigAddress> - None
+        serializer.bool(False)
+        
+        # Option<u64> nonce - Some
+        serializer.bool(True)
+        serializer.u64(self.nonce)
+    
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, OrderlessPayload):
+            return NotImplemented
+        return (
+            self.entry_function == other.entry_function 
+            and self.nonce == other.nonce
+        )
+    
+    def __str__(self):
+        return f"OrderlessPayload(nonce={self.nonce}, {self.entry_function})"
 
 class ModuleId:
     address: AccountAddress

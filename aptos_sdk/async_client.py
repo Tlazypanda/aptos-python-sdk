@@ -22,6 +22,7 @@ from .transactions import (
     SignedTransaction,
     TransactionArgument,
     TransactionPayload,
+    OrderlessPayload,
 )
 from .type_tag import StructTag, TypeTag
 
@@ -529,6 +530,48 @@ class RestClient:
         txn_hash = await self.submit_bcs_transaction(signed_transaction)
         await self.wait_for_transaction(txn_hash)
         return await self.transaction_by_hash(txn_hash)
+    
+    async def submit_orderless_transaction(
+    self,
+    sender: Account,
+    payload: TransactionPayload,
+    nonce: Optional[int] = None,
+    wait: bool = False
+    ) -> str:        
+        
+        if nonce is None:
+            raise ValueError("Nonce required for orderless")
+        
+        if not isinstance(payload.value, EntryFunction):
+            raise ValueError("Only EntryFunction supported for orderless")
+        
+        orderless = OrderlessPayload(payload.value, nonce)
+        
+        chain_id = await self.chain_id()
+
+        # Orderless transactions typically have shorter expiration windows (e.g., 30 seconds)
+        # Use a much shorter TTL than regular transactions
+        orderless_expiration_ttl = 30  # 30 seconds
+        
+        raw_txn = RawTransaction(
+            sender=sender.address(),
+            sequence_number=0xDEADBEEF,
+            payload=TransactionPayload(orderless),
+            max_gas_amount=self.client_config.max_gas_amount,
+            gas_unit_price=self.client_config.gas_unit_price,
+            expiration_timestamps_secs=int(time.time()) + orderless_expiration_ttl,
+            chain_id=chain_id,
+        )
+        
+        authenticator = sender.sign_transaction(raw_txn)
+        signed_txn = SignedTransaction(raw_txn, authenticator)
+        
+        tx_hash = await self.submit_bcs_transaction(signed_txn)
+        
+        if wait:
+            await self.wait_for_transaction(tx_hash)
+        
+        return tx_hash
 
     async def transaction_pending(self, txn_hash: str) -> bool:
         response = await self._get(endpoint=f"transactions/by_hash/{txn_hash}")
