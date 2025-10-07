@@ -3,6 +3,7 @@
 
 import asyncio
 import logging
+import secrets
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -18,11 +19,12 @@ from .metadata import Metadata
 from .transactions import (
     EntryFunction,
     MultiAgentRawTransaction,
+    OrderlessPayload,
     RawTransaction,
+    Script,
     SignedTransaction,
     TransactionArgument,
     TransactionPayload,
-    OrderlessPayload,
 )
 from .type_tag import StructTag, TypeTag
 
@@ -530,29 +532,40 @@ class RestClient:
         txn_hash = await self.submit_bcs_transaction(signed_transaction)
         await self.wait_for_transaction(txn_hash)
         return await self.transaction_by_hash(txn_hash)
-    
+
     async def submit_orderless_transaction(
-    self,
-    sender: Account,
-    payload: TransactionPayload,
-    nonce: Optional[int] = None,
-    wait: bool = False
-    ) -> str:        
-        
+        self,
+        sender: Account,
+        payload: TransactionPayload,
+        nonce: Optional[int] = None,
+        multisig_address: Optional[AccountAddress] = None,
+        wait: bool = False,
+    ) -> str:
+
         if nonce is None:
-            raise ValueError("Nonce required for orderless")
-        
-        if not isinstance(payload.value, EntryFunction):
-            raise ValueError("Only EntryFunction supported for orderless")
-        
+            nonce = secrets.randbits(64)
+
+            # Extract executable from payload (can be None for multisig voting)
+        executable = payload.value if payload.value else None
+
+        if executable is not None and not isinstance(
+            executable, (EntryFunction, Script)
+        ):
+            raise ValueError(
+                "Orderless transactions only support EntryFunction and Script payloads"
+            )
+
+        # Create orderless payload
+        orderless = OrderlessPayload(executable, nonce, multisig_address)
+
         orderless = OrderlessPayload(payload.value, nonce)
-        
+
         chain_id = await self.chain_id()
 
-        # Orderless transactions typically have shorter expiration windows (e.g., 30 seconds)
+        # Orderless transactions typically have shorter expiration windows (60 seconds)
         # Use a much shorter TTL than regular transactions
-        orderless_expiration_ttl = 30  # 30 seconds
-        
+        orderless_expiration_ttl = 60
+
         raw_txn = RawTransaction(
             sender=sender.address(),
             sequence_number=0xDEADBEEF,
@@ -562,15 +575,15 @@ class RestClient:
             expiration_timestamps_secs=int(time.time()) + orderless_expiration_ttl,
             chain_id=chain_id,
         )
-        
+
         authenticator = sender.sign_transaction(raw_txn)
         signed_txn = SignedTransaction(raw_txn, authenticator)
-        
+
         tx_hash = await self.submit_bcs_transaction(signed_txn)
-        
+
         if wait:
             await self.wait_for_transaction(tx_hash)
-        
+
         return tx_hash
 
     async def transaction_pending(self, txn_hash: str) -> bool:

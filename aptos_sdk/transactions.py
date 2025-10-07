@@ -253,7 +253,7 @@ class TransactionPayload:
     SCRIPT: int = 0
     MODULE_BUNDLE: int = 1
     SCRIPT_FUNCTION: int = 2
-    INNER_PAYLOAD: int = 4 
+    INNER_PAYLOAD: int = 4
 
     variant: int
     value: Any
@@ -265,7 +265,7 @@ class TransactionPayload:
             self.variant = TransactionPayload.MODULE_BUNDLE
         elif isinstance(payload, EntryFunction):
             self.variant = TransactionPayload.SCRIPT_FUNCTION
-        elif isinstance(payload, OrderlessPayload):  
+        elif isinstance(payload, OrderlessPayload):
             self.variant = TransactionPayload.INNER_PAYLOAD
         else:
             raise Exception("Invalid type")
@@ -297,6 +297,7 @@ class TransactionPayload:
     def serialize(self, serializer: Serializer) -> None:
         serializer.uleb128(self.variant)
         self.value.serialize(serializer)
+
 
 class ModuleBundle:
     def __init__(self):
@@ -479,45 +480,95 @@ class EntryFunction:
         serializer.sequence(self.ty_args, Serializer.struct)
         serializer.sequence(self.args, Serializer.to_bytes)
 
+
 class OrderlessPayload:
     """Orderless transaction payload wrapper"""
-    
-    def __init__(self, entry_function: EntryFunction, nonce: int):
-        self.entry_function = entry_function
+
+    # OrderlessTransactionPayload variants
+    ORDERLESS_V1: int = 0
+
+    # Executable variants
+    EXECUTABLE_SCRIPT: int = 0
+    EXECUTABLE_ENTRY_FUNCTION: int = 1
+    EXECUTABLE_EMPTY: int = 2  # For multisig voting without execution
+
+    # ExtraConfig variants
+    EXTRA_CONFIG_V1: int = 0
+
+    def __init__(
+        self,
+        executable: Optional[Union[Script, EntryFunction]],
+        nonce: int,
+        multisig_address: Optional[AccountAddress] = None,
+    ):
+        """
+        Create an orderless transaction payload.
+
+        :param executable: Script or EntryFunction to execute. None for multisig voting.
+        :param nonce: Unique nonce for replay protection
+        :param multisig_address: Address of multisig account (required for multisig transactions)
+        """
+        if executable is not None and not isinstance(
+            executable, (Script, EntryFunction)
+        ):
+            raise ValueError("Executable must be either Script or EntryFunction")
+
+        # If no executable, must be multisig voting
+        if executable is None and multisig_address is None:
+            raise ValueError("Either executable or multisig_address must be provided")
+
+        self.executable = executable
         self.nonce = nonce
-    
+        self.multisig_address = multisig_address
+
     def serialize(self, serializer: Serializer):
         """Serialize orderless payload WITHOUT the outer variant (TransactionPayload handles that)"""
-        
+
         # OrderlessTransactionPayload::V1 variant
-        serializer.uleb128(0)
-        
-        # Executable::EntryFunction variant
-        serializer.uleb128(1)
-        
-        # Serialize the entry function
-        self.entry_function.serialize(serializer)
-        
+        serializer.uleb128(OrderlessPayload.ORDERLESS_V1)
+
+        # Executable variant
+        if self.executable is None:
+            # Empty executable for multisig voting
+            serializer.uleb128(OrderlessPayload.EXECUTABLE_EMPTY)
+        elif isinstance(self.executable, Script):
+            serializer.uleb128(OrderlessPayload.EXECUTABLE_SCRIPT)
+            self.executable.serialize(serializer)
+        elif isinstance(self.executable, EntryFunction):
+            serializer.uleb128(OrderlessPayload.EXECUTABLE_ENTRY_FUNCTION)
+            self.executable.serialize(serializer)
+        else:
+            raise ValueError("Invalid executable type")
+
         # ExtraConfig::V1 variant
-        serializer.uleb128(0)
-        
-        # Option<MultisigAddress> - None
-        serializer.bool(False)
-        
+        serializer.uleb128(OrderlessPayload.EXTRA_CONFIG_V1)
+
+        # Option<MultisigAddress>
+        if self.multisig_address is not None:
+            serializer.bool(True)  # Some
+            self.multisig_address.serialize(serializer)
+        else:
+            serializer.bool(False)  # None
+
         # Option<u64> nonce - Some
         serializer.bool(True)
         serializer.u64(self.nonce)
-    
+
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, OrderlessPayload):
             return NotImplemented
         return (
-            self.entry_function == other.entry_function 
+            self.executable == other.executable
             and self.nonce == other.nonce
+            and self.multisig_address == other.multisig_address
         )
-    
+
     def __str__(self):
-        return f"OrderlessPayload(nonce={self.nonce}, {self.entry_function})"
+        multisig_str = (
+            f", multisig={self.multisig_address}" if self.multisig_address else ""
+        )
+        return f"OrderlessPayload(nonce={self.nonce}, {self.executable}{multisig_str})"
+
 
 class ModuleId:
     address: AccountAddress
